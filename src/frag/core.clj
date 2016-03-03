@@ -1,6 +1,19 @@
-(ns frag.core)
+(ns frag.core
+  (:require [plumbing.core :as p]
+            [plumbing.fnk.pfnk :as pfnk]))
 
-(defn foo
-  "I don't do a whole lot."
-  [x]
-  (println x "Hello, World!"))
+(deftype ReactiveMap [specs]
+  clojure.lang.ILookup
+  (valAt [this k] (.valAt this k nil))
+  (valAt [this k not-found]
+    (let [r (.valAt specs k not-found)]
+      (if (and (fn? r) (:schema (meta r)))
+        (r specs)
+        r))))
+
+
+
+
+(defn reactive-map
+  [specs]
+  (ReactiveMap. specs))
