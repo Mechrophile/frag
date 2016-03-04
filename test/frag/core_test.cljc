@@ -1,11 +1,10 @@
 (ns frag.core-test
-  (:require [frag.core :refer :all]
-            [midje.sweet :refer :all]
-            [clojure.test :refer :all]
+  (:require [frag.core :refer [reactive-map nest]]
+            #?(:clj [clojure.test :refer :all]
+               :cljs [cljs.test :refer-macros [deftest is testing run-tests]])
             [plumbing.core :as p]
             [plumbing.fnk.pfnk :as pfnk]
-            [schema.core :as s]
-            ))
+            [schema.core :as s]))
 
 (deftest test-reactive-map
   (testing "works like a regular map"

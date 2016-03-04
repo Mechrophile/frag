@@ -82,41 +82,82 @@
     (reset! maybe-dirty new-maybe-dirty)
     result))
 
-(deftype ReactiveMap [specs values dirty maybe-dirty]
-  clojure.lang.ILookup
-  (valAt [this k] (.valAt this k nil))
-  (valAt [this k not-found] (rmap-get specs values dirty maybe-dirty k not-found))
+(defn- rmap-assoc*
+  "returns
+  [updated-values updated-dirty updated-maybe-dirty
+   new-values new-dirty new-maybe-dirty]"
+  [specs values dirty maybe-dirty k v]
+  (if (= v (get values k))
+    nil
+    (let [dirtied       (dependent-keys specs #{k})
+          maybe-dirtied (dependent-keys-recursive specs dirtied)
+          redirtied     (set/intersection (set/union dirtied maybe-dirtied)
+                                          (set/union dirty   maybe-dirty))
+          ;; if we're dirtying any keys that were already dirty and depend on
+          ;; their own value, we have to evaluate them now
+          [vs d md]
+          (reduce
+           (fn [[vs ds md] dk]
+             (let [spec (get specs dk)]
+               (if (and (not (static-spec? spec))
+                        (some #{dk} (pfnk/input-schema-keys spec)))
+                 (do ;;(println "forcing eval of" dk
+                     ;;         "because it depends on itself and" k)
+                   (drop 2 (rmap-get* specs vs ds md dk nil)))
+                 [vs ds md])))
+           [values dirty maybe-dirty]
+           redirtied)]
+      [vs d md
+       (assoc vs k v) (into d dirtied) (into md maybe-dirtied)])) )
 
-  clojure.lang.IPersistentCollection
-  (cons [this o]
-    (reduce (fn [m [k v]] (assoc m k v)) this o))
+(declare ->ReactiveMap)
 
-  (equiv [this o]
-    (and (instance? ReactiveMap o)
-         (= (.values o) values)
-         (= (.dirty o) dirty)
-         (= (.maybe-dirty o) maybe-dirty)))
+(defn rmap-assoc
+  [specs values dirty maybe-dirty k v]
+  (when-let [[mv md mnd nv nd nmd]
+             (rmap-assoc* specs @values @dirty @maybe-dirty k v)]
+    (do (reset! values mv)
+        (reset! dirty md)
+        (reset! maybe-dirty nmd)
+        (->ReactiveMap specs (atom nv) (atom nd) (atom nmd)))) )
 
-  clojure.lang.Associative
-  (assoc [this k v]
-    (if (= v (get @values k))
-      this
-      (let [dirtied       (dependent-keys specs #{k})
-            maybe-dirtied (dependent-keys-recursive specs dirtied)
-            redirtied     (set/intersection (set/union dirtied maybe-dirtied)
-                                            (set/union @dirty @maybe-dirty))]
-        ;; if we're dirtying any keys that were already dirty and depend on
-        ;; their own value, we have to evaluate them now
-        (doseq [dk redirtied]
-          (let [spec (get specs dk)]
-            (when-not (static-spec? spec)
-              (when (some #{dk} (pfnk/input-schema-keys spec))
-                ;;(println "forcing eval of" dk "because it depends on itself and" k)
-                (get this dk)))))
-        (ReactiveMap. specs
-                      (atom (assoc @values k v))
-                      (atom (into @dirty dirtied))
-                      (atom (into @maybe-dirty maybe-dirtied)))))))
+#?(:clj
+   (deftype ReactiveMap [specs values dirty maybe-dirty]
+     clojure.lang.ILookup
+     (valAt [this k] (.valAt this k nil))
+     (valAt [this k not-found]
+       (rmap-get specs values dirty maybe-dirty k not-found))
+
+     clojure.lang.IPersistentCollection
+     (cons [this o]
+       (reduce (fn [m [k v]] (assoc m k v)) this o))
+
+     (equiv [this o]
+       (and (instance? ReactiveMap o)
+            (= (.values o) values)
+            (= (.dirty o) dirty)
+            (= (.maybe-dirty o) maybe-dirty)))
+
+     clojure.lang.Associative
+     (assoc [this k v]
+       (or (rmap-assoc specs values dirty maybe-dirty k v)
+           this)))
+
+   :cljs
+   (deftype ReactiveMap [specs values dirty maybe-dirty]
+     ILookup
+     (-lookup [this k] (-lookup this k nil))
+     (-lookup [this k not-found]
+       (rmap-get specs values dirty maybe-dirty k not-found))
+
+     ICollection
+     (-conj [this o]
+       (reduce (fn [m [k v]] (assoc m k v)) this o))
+
+     IAssociative
+     (-assoc [this k v]
+       (or (rmap-assoc specs values dirty maybe-dirty k v)
+           this))))
 
 (defn reactive-map
   [& args]
