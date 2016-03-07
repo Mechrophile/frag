@@ -18,7 +18,27 @@
     (testing "merge with map"
       (let [m (merge (reactive-map {:a (p/fnk [b c] (+ b c))})
                      {:b 5 :c 7})]
-        (is (= 12 (get m :a))))))
+        (is (= 12 (get m :a)))))
+    (testing "is seqable"
+      (let [m (reactive-map {:a 1 :b 2 :c (p/fnk [a b] (+ a b))})
+            s (seq m)
+            expected #{[:a 1] [:b 2] [:c 3]}]
+        (is (every? expected s))
+        (is (every? (set s) expected))))
+    (testing "keys"
+      (is (= [:a :b] (keys (reactive-map {:a 1 :b (p/fnk [a] a)})))))
+    (testing "contains?"
+      (let [m (reactive-map {:a 1 :b (p/fnk [a] a)})]
+        (is (contains? m :a))
+        (is (contains? m :b))))
+    (testing "into map"
+      (let [m (reactive-map {:a 1 :b 2 :c (p/fnk [a b] (+ a b))})
+            expected {:a 1 :b 2 :c 3}]
+        (is (= expected (into {} m)))))
+    (testing "prints like a map"
+      (let [m (reactive-map {:a 1 :b 2 :c (p/fnk [a b] (+ a b))})
+            expected "{:a 1, :b 2, :c 3}"]
+        (is (= expected (pr-str m))))))
 
   (testing "can calculate elements based on other elements"
     (testing "simple"
@@ -100,4 +120,4 @@
                            :c (p/fnk [d] (* d 7))}
                           :d (p/fnk [e] (* e 11)))
           m (assoc m :e 13)]
-      (is (= (* 13 11 7 5 3) (get m :a))))))
+      (is (= (* 13 11 7 5 3) (get m :a)))))) 

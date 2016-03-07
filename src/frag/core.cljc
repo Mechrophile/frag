@@ -121,6 +121,10 @@
         (reset! maybe-dirty nmd)
         (->ReactiveMap specs (atom nv) (atom nd) (atom nmd)))) )
 
+(defn rmap-keys
+  [specs values]
+  (distinct (concat (keys specs) (keys values))))
+
 #?(:clj
    (deftype ReactiveMap [specs values dirty maybe-dirty]
      clojure.lang.ILookup
@@ -138,10 +142,22 @@
             (= (.dirty o) dirty)
             (= (.maybe-dirty o) maybe-dirty)))
 
-     clojure.lang.Associative
+     clojure.lang.IPersistentMap
      (assoc [this k v]
        (or (rmap-assoc specs values dirty maybe-dirty k v)
-           this)))
+           this))
+
+     java.lang.Iterable
+     (iterator [this]
+       (.iterator (seq this)))
+
+     clojure.lang.Associative
+     (containsKey [this k]
+       (boolean (some #{k} (rmap-keys specs @values))))
+
+     clojure.lang.Seqable
+     (seq [this] (for [k (rmap-keys specs @values)]
+                   (clojure.lang.MapEntry. k (get this k)))))
 
    :cljs
    (deftype ReactiveMap [specs values dirty maybe-dirty]
@@ -157,7 +173,15 @@
      IAssociative
      (-assoc [this k v]
        (or (rmap-assoc specs values dirty maybe-dirty k v)
-           this))))
+           this))
+
+     ISeqable
+     (-seq [this] (for [k (rmap-keys specs @values)]
+                    (vector k (get this k))))
+
+     IPrintWithWriter
+     (-pr-writer [this writer opts]
+       (print-map this pr-writer writer opts))))
 
 (defn reactive-map
   [& args]
