@@ -154,6 +154,9 @@
      clojure.lang.Associative
      (containsKey [this k]
        (boolean (some #{k} (rmap-keys specs @values))))
+     (entryAt [this k]
+       (when (contains? this k)
+         (clojure.lang.MapEntry. k (get this k))))
 
      clojure.lang.Seqable
      (seq [this] (for [k (rmap-keys specs @values)]
@@ -194,7 +197,9 @@
                     (let [[k v & more] args]
                       (cond
                         (keyword? k) (recur (assoc specs k v) more)
-                        (map? k) (recur (merge specs k) (cons v more))))))]
+                        (map? k) (recur (merge specs k) (when v (cons v more)))
+                        :else (throw (new #?(:clj RuntimeException :cljs js/Error)
+                                          "unexpected value in key position"))))))]
       (ReactiveMap. specs (atom {}) (atom #{}) (atom #{})))))
 
 (defn nest
@@ -202,4 +207,67 @@
   (let [f (fn [m] (let [self (or (get m k) (apply reactive-map spec-args))]
                    (merge self (dissoc m k))))
         input-schema (p/map-from-keys (constantly s/Any) (cons k ks))]
-    {k (pfnk/fn->fnk f [input-schema s/Any])}))
+    {k (pfnk/fn->fnk f [input-schema ReactiveMap])}))
+
+(defn- rmap-specs [m]
+  #?(:clj (.specs m)
+     :cljs (.-specs m)))
+
+(defn- rmap-values [m]
+  #?(:clj @(.values m)
+     :cljs @(.-values m)))
+
+(defn input-keys
+  "Given a ReactiveMap, return a set of keys that:
+   - are expected as input in any spec
+   - OR have a value but no spec
+   - OR have a spec that takes its previous value as input"
+  [m]
+  (assert (instance? ReactiveMap m))
+  (let [spec-keys       (-> (rmap-specs m) keys set)
+        val-keys        (-> (rmap-values m) keys set)
+        spec-input-map  (->> (rmap-specs m)
+                             (remove #(static-spec? (val %)))
+                             (p/map-vals (comp set pfnk/input-schema-keys)))
+        all-spec-inputs (apply set/union (vals spec-input-map))]
+    (set/union
+     (set/difference all-spec-inputs spec-keys) ;; expected in spec
+     (set/difference val-keys spec-keys)        ;; value but no spec
+     (set (keep (fn [[k v]] (when (contains? v k) k)) spec-input-map)))))
+
+;; After tools.namespace reloads the namespace, ReactiveMap inside of a closure
+;; refers to a different object than ReactiveMap at top level. Seems like a bug.
+;; This works around it.
+(defn- outputs-rmap?
+  [[k v]]
+  (= ReactiveMap (pfnk/output-schema v)))
+
+(defn input-keys-recursive
+  "Like input-keys, but recurses through any specs that return a ReactiveMap
+  and take themselves as input (such as created with nest)."
+  [m]
+  (when m
+    (let [ik (input-keys m)
+          iks (set/intersection ik (-> (rmap-specs m) keys set))
+          ikd (set/difference ik iks)
+          ikp (->> (select-keys (rmap-specs m) iks)
+                   (filter outputs-rmap?)
+                   (keys)
+                   (select-keys m)
+                   (p/map-vals input-keys-recursive)
+                   (mapcat (fn [[k v]] (map #(cons k %) v))))]
+      (set (concat (map list ikd) ikp)))))
+
+(defn inputs
+  [m]
+  (select-keys m (input-keys m)))
+
+(defn inputs-recursive
+  [m]
+  (reduce (fn [s p]
+            (let [v (get-in m p ::not-found)]
+              (if (= ::not-found v)
+                s
+                (assoc-in s p v))))
+          {}
+          (input-keys-recursive m)))

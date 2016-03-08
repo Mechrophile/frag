@@ -1,5 +1,5 @@
 (ns frag.core-test
-  (:require [frag.core :refer [reactive-map nest]]
+  (:require [frag.core :refer [reactive-map nest input-keys input-keys-recursive]]
             #?(:clj [clojure.test :refer :all]
                :cljs [cljs.test :refer-macros [deftest is testing run-tests]])
             [plumbing.core :as p]
@@ -38,7 +38,9 @@
     (testing "prints like a map"
       (let [m (reactive-map {:a 1 :b 2 :c (p/fnk [a b] (+ a b))})
             expected "{:a 1, :b 2, :c 3}"]
-        (is (= expected (pr-str m))))))
+        (is (= expected (pr-str m)))))
+    (testing "select-keys doesn't return non-existant keys"
+      (is (= {:a 1} (select-keys (reactive-map {:a 1}) [:a :b :c])))))
 
   (testing "can calculate elements based on other elements"
     (testing "simple"
@@ -112,7 +114,10 @@
              (-> (assoc m :input 2)
                  (assoc :input 3)
                  (assoc :input 4)
-                 :nested :value)))))
+                 :nested :value))))
+    (let [m (reactive-map :a (p/fnk [i] i)
+                          (nest :q [] {:b (p/fnk [] 1)}))]
+      (is (= 1 (get-in m [:q :b])))))
 
   (testing "constructor pulls in nested maps"
     (let [m (reactive-map :a (p/fnk [b] (* b 3))
@@ -121,3 +126,15 @@
                           :d (p/fnk [e] (* e 11)))
           m (assoc m :e 13)]
       (is (= (* 13 11 7 5 3) (get m :a)))))) 
+
+(deftest input-keys-test
+  (let [m (reactive-map :a (p/fnk [b c] (+ b c))
+                        :d 7
+                        :f (fn [x] x)
+                        :z (p/fnk [z f] (inc (or z (f 0)))))]
+    (is (= #{:b :c :z} (input-keys m)))))
+
+(deftest input-keys-recursive-test
+  (let [m (reactive-map :a (p/fnk [i] i)
+                        (nest :q [] {:z (p/fnk [y] y)}))]
+    (is (= #{[:i] [:q :y]} (input-keys-recursive m)))))
