@@ -221,26 +221,32 @@
   "Given a ReactiveMap, return a set of keys that:
    - are expected as input in any spec
    - OR have a value but no spec
+   - OR have a value and different static spec
    - OR have a spec that takes its previous value as input"
   [m]
   (assert (instance? ReactiveMap m))
   (let [spec-keys       (-> (rmap-specs m) keys set)
         val-keys        (-> (rmap-values m) keys set)
-        spec-input-map  (->> (rmap-specs m)
-                             (remove #(static-spec? (val %)))
-                             (p/map-vals (comp set pfnk/input-schema-keys)))
-        all-spec-inputs (apply set/union (vals spec-input-map))]
+        specs-by-static (group-by #(static-spec? (val %)) (rmap-specs m))
+        spec-input-map  (p/map-vals (comp set pfnk/input-schema-keys)
+                                    (get specs-by-static false))
+        all-spec-inputs (set (mapcat val spec-input-map))]
     (set/union
      (set/difference all-spec-inputs spec-keys) ;; expected in spec
      (set/difference val-keys spec-keys)        ;; value but no spec
-     (set (keep (fn [[k v]] (when (contains? v k) k)) spec-input-map)))))
+     (-> (remove (fn [[k v]] (= v (get m k)))    ;; value with different spec
+                 (get specs-by-static true))
+         (keys) (set))
+     (set (keep (fn [[k v]] (when (contains? v k) k)) ;; spec that takes itself
+                spec-input-map)))))
 
 ;; After tools.namespace reloads the namespace, ReactiveMap inside of a closure
 ;; refers to a different object than ReactiveMap at top level. Seems like a bug.
 ;; This works around it.
 (defn- outputs-rmap?
   [[k v]]
-  (= ReactiveMap (pfnk/output-schema v)))
+  (and (not (static-spec? v))
+       (= ReactiveMap (pfnk/output-schema v))))
 
 (defn input-keys-recursive
   "Like input-keys, but recurses through any specs that return a ReactiveMap

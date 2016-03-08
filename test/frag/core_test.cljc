@@ -132,9 +132,13 @@
                         :d 7
                         :f (fn [x] x)
                         :z (p/fnk [z f] (inc (or z (f 0)))))]
-    (is (= #{:b :c :z} (input-keys m)))))
+    (is (= #{:b :c :z} (input-keys m))))
+
+  (let [m (reactive-map :a (p/fnk [i] i) :i 1)]
+    (is (= #{} (input-keys m)))
+    (is (= #{:i} (input-keys (assoc m :i 2))))))
 
 (deftest input-keys-recursive-test
   (let [m (reactive-map :a (p/fnk [i] i)
                         (nest :q [] {:z (p/fnk [y] y)}))]
-    (is (= #{[:i] [:q :y]} (input-keys-recursive m)))))
+    (is (= #{[:i] [:q :y]} (input-keys-recursive m))))) 
