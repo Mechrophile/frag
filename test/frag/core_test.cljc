@@ -141,4 +141,10 @@
 (deftest input-keys-recursive-test
   (let [m (reactive-map :a (p/fnk [i] i)
                         (nest :q [] {:z (p/fnk [y] y)}))]
-    (is (= #{[:i] [:q :y]} (input-keys-recursive m))))) 
+    (is (= #{[:i] [:q :y]} (input-keys-recursive m))))
+  (let [m (reactive-map (nest :a [:i] :a (p/fnk [i j] (+ i j)) :j 2) :i 1)]
+    (is (= #{} (input-keys-recursive m)))
+    (is (= #{[:i]} (input-keys-recursive (assoc m :i 2))))
+    (is (= #{[:i] [:a :j]}
+           (input-keys-recursive (-> (assoc m :i 2)
+                                     (assoc-in [:a :j] 3)))))))

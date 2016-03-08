@@ -253,16 +253,27 @@
   and take themselves as input (such as created with nest)."
   [m]
   (when m
-    (let [ik (input-keys m)
-          iks (set/intersection ik (-> (rmap-specs m) keys set))
-          ikd (set/difference ik iks)
-          ikp (->> (select-keys (rmap-specs m) iks)
-                   (filter outputs-rmap?)
-                   (keys)
-                   (select-keys m)
-                   (p/map-vals input-keys-recursive)
-                   (mapcat (fn [[k v]] (map #(cons k %) v))))]
-      (set (concat (map list ikd) ikp)))))
+    (let [input-key-set       (input-keys m)
+          nested-specs        (->> input-key-set
+                                   (select-keys (rmap-specs m))
+                                   (filter outputs-rmap?))
+          nested-param-map    (p/map-vals pfnk/input-schema-keys nested-specs)
+          non-nested-inputs   (->> (keys nested-specs)
+                                   (set)
+                                   (set/difference input-key-set)
+                                   (map list))
+          remove-fwded-inputs (fn [k v]
+                                (->> (get nested-param-map k)
+                                     (map list)
+                                     (set)
+                                     (p/<- (remove v))))
+          nested-inputs       (->> (keys nested-specs)
+                                   (select-keys m)
+                                   (p/map-vals input-keys-recursive)
+                                   (mapcat (fn [[k v]]
+                                             (map (partial cons k)
+                                                  (remove-fwded-inputs k v)))))]
+      (set (concat nested-inputs non-nested-inputs)))))
 
 (defn inputs
   [m]
