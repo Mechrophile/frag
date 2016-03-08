@@ -113,20 +113,42 @@
 (declare ->ReactiveMap)
 
 (defn rmap-assoc
-  [specs values dirty maybe-dirty k v]
+  [specs values dirty maybe-dirty input-keys k v]
   (when-let [[mv md mnd nv nd nmd]
              (rmap-assoc* specs @values @dirty @maybe-dirty k v)]
     (do (reset! values mv)
         (reset! dirty md)
         (reset! maybe-dirty nmd)
-        (->ReactiveMap specs (atom nv) (atom nd) (atom nmd)))) )
+        (->ReactiveMap specs
+                       (atom nv)
+                       (atom nd)
+                       (atom nmd)
+                       (let [sv (get specs k)]
+                         (if (or (not (static-spec? sv))
+                                 (not= v sv))
+                           (conj input-keys k)
+                           (disj input-keys k)))))))
 
 (defn rmap-keys
   [specs values]
   (distinct (concat (keys specs) (keys values))))
 
+(defn spec-input-keys
+  "Return any keys that are taken by a spec as input and not defined by another
+  spec and any specs that depend on themselves. "
+  [specs]
+  (let [spec-keys       (-> specs keys set)
+        specs-by-static (group-by #(static-spec? (val %)) specs)
+        spec-input-map  (p/map-vals (comp set pfnk/input-schema-keys)
+                                    (get specs-by-static false))
+        all-spec-inputs (set (mapcat val spec-input-map))]
+    (set/union
+     (set/difference all-spec-inputs spec-keys) ;; expected in spec
+     (set (keep (fn [[k v]] (when (contains? v k) k)) ;; spec that takes itself
+                spec-input-map)))))
+
 #?(:clj
-   (deftype ReactiveMap [specs values dirty maybe-dirty]
+   (deftype ReactiveMap [specs values dirty maybe-dirty input-keys]
      clojure.lang.ILookup
      (valAt [this k] (.valAt this k nil))
      (valAt [this k not-found]
@@ -144,7 +166,7 @@
 
      clojure.lang.IPersistentMap
      (assoc [this k v]
-       (or (rmap-assoc specs values dirty maybe-dirty k v)
+       (or (rmap-assoc specs values dirty maybe-dirty input-keys k v)
            this))
 
      java.lang.Iterable
@@ -163,7 +185,7 @@
                    (clojure.lang.MapEntry. k (get this k)))))
 
    :cljs
-   (deftype ReactiveMap [specs values dirty maybe-dirty]
+   (deftype ReactiveMap [specs values dirty maybe-dirty input-keys]
      ILookup
      (-lookup [this k] (-lookup this k nil))
      (-lookup [this k not-found]
@@ -175,7 +197,7 @@
 
      IAssociative
      (-assoc [this k v]
-       (or (rmap-assoc specs values dirty maybe-dirty k v)
+       (or (rmap-assoc specs values dirty maybe-dirty input-keys k v)
            this))
 
      ISeqable
@@ -186,21 +208,27 @@
      (-pr-writer [this writer opts]
        (print-map this pr-writer writer opts))))
 
+(defn parse-specs
+  [args]
+  (loop [specs {}
+         args args]
+    (if (empty? args)
+      specs
+      (let [[k v & more] args]
+        (cond
+          (keyword? k) (recur (assoc specs k v) more)
+          (map? k) (recur (merge specs k) (when v (cons v more)))
+          :else (throw (new #?(:clj RuntimeException :cljs js/Error)
+                            "unexpected value in key position")))))))
+
 (defn reactive-map
   [& args]
-  (if (= 1 (count args))
-    (ReactiveMap. (first args) (atom {}) (atom #{}) (atom #{}))
-    (let [specs (loop [specs {}
-                       args args]
-                  (if (empty? args)
-                    specs
-                    (let [[k v & more] args]
-                      (cond
-                        (keyword? k) (recur (assoc specs k v) more)
-                        (map? k) (recur (merge specs k) (when v (cons v more)))
-                        :else (throw (new #?(:clj RuntimeException :cljs js/Error)
-                                          "unexpected value in key position"))))))]
-      (ReactiveMap. specs (atom {}) (atom #{}) (atom #{})))))
+  (let [specs (parse-specs args)]
+    (ReactiveMap. specs
+                  (atom {})
+                  (atom #{})
+                  (atom #{})
+                  (spec-input-keys specs))))
 
 (defn nest
   [k ks & spec-args]
@@ -224,21 +252,8 @@
    - OR have a value and different static spec
    - OR have a spec that takes its previous value as input"
   [m]
-  (assert (instance? ReactiveMap m))
-  (let [spec-keys       (-> (rmap-specs m) keys set)
-        val-keys        (-> (rmap-values m) keys set)
-        specs-by-static (group-by #(static-spec? (val %)) (rmap-specs m))
-        spec-input-map  (p/map-vals (comp set pfnk/input-schema-keys)
-                                    (get specs-by-static false))
-        all-spec-inputs (set (mapcat val spec-input-map))]
-    (set/union
-     (set/difference all-spec-inputs spec-keys) ;; expected in spec
-     (set/difference val-keys spec-keys)        ;; value but no spec
-     (-> (remove (fn [[k v]] (= v (get m k)))    ;; value with different spec
-                 (get specs-by-static true))
-         (keys) (set))
-     (set (keep (fn [[k v]] (when (contains? v k) k)) ;; spec that takes itself
-                spec-input-map)))))
+  #?(:clj  (.input-keys m)
+     :cljs (.-input-keys m)))
 
 ;; After tools.namespace reloads the namespace, ReactiveMap inside of a closure
 ;; refers to a different object than ReactiveMap at top level. Seems like a bug.
@@ -250,7 +265,10 @@
 
 (defn input-keys-recursive
   "Like input-keys, but recurses through any specs that return a ReactiveMap
-  and take themselves as input (such as created with nest)."
+  and take themselves as input (such as created with nest).
+
+  NOTE: this requires evaluation of nested ReactiveMaps, which may throw an
+        exception if they're expecting input that isn't available"
   [m]
   (when m
     (let [input-key-set       (input-keys m)
