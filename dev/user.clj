@@ -3,7 +3,9 @@
             [clojure.tools.namespace.dir :as nd]
             [clojure.tools.namespace.track :as nt]
             [clojure.tools.namespace.reload :as nr]
-            [clojure.test :refer [run-tests]]))
+            [clojure.test :refer [run-tests]]
+            [plumbing.core :as p]
+            [frag.core :as f]))
 
 (disable-reload!)
 
@@ -35,3 +37,17 @@
     (reset! autotester (future (while true
                                  (check-reload tracker)
                                  (Thread/sleep 500))))))
+
+
+(def complex-map
+  (f/reactive-map
+   :a (p/fnk [b c d] (+ b c d))
+   (f/nest :bn [] :v (p/fnk [i] i))
+   :b (p/fnk [bn] (:v bn))
+   (f/nest :cn [:b] :v (p/fnk [i b] (+ (or i 0) (or b 0))))
+   :c (p/fnk [cn] (:v cn))
+   (f/nest :dn [:b :c] :v (p/fnk [i b c] (+ (or i 0)
+                                            (or b 0)
+                                            (or c 0))))
+   :d (p/fnk [dn] (:v dn))))
+

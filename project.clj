@@ -7,7 +7,8 @@
                  [org.clojure/clojurescript "1.7.228"]
                  [prismatic/plumbing "0.5.2"]
                  [prismatic/schema "1.0.5"]]
-  :profiles {:dev {:dependencies [[org.clojure/tools.namespace "0.2.11"]]
+  :profiles {:dev {:dependencies [[org.clojure/tools.namespace "0.2.11"]
+                                  [criterium "0.4.4"]]
                    :source-paths ["src" "dev"]
                    :plugins [[lein-cljsbuild "1.1.2"]
                              [lein-doo "0.1.6"]]}}
