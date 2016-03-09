@@ -29,7 +29,7 @@
 (defn- cache-mark-dirty!       [cache k] (swap! cache assoc-in [k :dirty] true))
 (defn- cache-mark-maybe-dirty! [cache k] (swap! cache assoc-in [k :dirty] :maybe))
 (defn- cache-mark-clean!       [cache k] (swap! cache update k dissoc :dirty))
-(defn- cache-contains?         [cache k] (contains? @cache k)) ;; k :value ?
+(defn- cache-contains-value?   [cache k] (contains? (get @cache k) :value))
 (defn- cache-get               [cache k] (get-in @cache [k :value]))
 
 (defn- cache-assoc!
@@ -98,7 +98,7 @@
 
 (defn- rmap-recalculate [specs cache state k]
   (let [spec-fn     (get specs k)
-        fetch-value #(if (cache-contains? cache %)
+        fetch-value #(if (cache-contains-value? cache %)
                        (cache-get cache %)
                        (get state %))
         old-value   (fetch-value k)
@@ -127,7 +127,7 @@
 (defn- rmap-get [specs cache state k not-found]
   (when (contains? specs k)
     (rmap-undirty specs cache state k))
-  (if (cache-contains? cache k)
+  (if (cache-contains-value? cache k)
     (cache-get cache k)
     (get state k not-found)))
 

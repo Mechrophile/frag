@@ -117,7 +117,26 @@
                  :nested :value))))
     (let [m (reactive-map :a (p/fnk [i] i)
                           (nest :q [] {:b (p/fnk [] 1)}))]
-      (is (= 1 (get-in m [:q :b])))))
+      (is (= 1 (get-in m [:q :b]))))
+
+    (let [m (reactive-map :a 1
+                          (nest :nested [:a]
+                                :input 0
+                                :value (p/fnk [input a] (* a input input)))
+                          :nv (p/fnk [nested] (:value nested))
+                          (nest :m [:nv]
+                                :input 2
+                                :value (p/fnk [nv input] (* nv (dec input))))
+                          :nnv (p/fnk [m] (:value m)))]
+      (is (= 0  (get m :nv)))
+      (is (= 0  (get m :nnv)))
+      (is (= 0  (get-in m [:nested :value])))
+      (is (= 16 (get (assoc-in m [:nested :input] 4) :nv)))
+      (is (= 16 (get (assoc-in m [:nested :input] 4) :nnv)))
+      (is (= 16 (get-in (assoc-in m [:nested :input] 4) [:nested :value])))
+      (is (= 9  (get (assoc-in m [:nested :input] 3) :nv)))
+      (is (= 9  (get (assoc-in m [:nested :input] 3) :nnv)))
+      (is (= 9  (get-in (assoc-in m [:nested :input] 3) [:nested :value])))))
 
   (testing "constructor pulls in nested maps"
     (let [m (reactive-map :a (p/fnk [b] (* b 3))
