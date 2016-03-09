@@ -135,8 +135,8 @@
   ;; if we have any descendants that depend on their own state, then their
   ;; current value becomes part of our new object's state
   (let [descendants (spec-descendants specs k)
-        dirty-descs (filter (partial cache-maybe-dirty? cache) descendants)
-        loopy-descs (filter (set (spec-loops specs)) descendants)]
+        loopy-descs (set/intersection (set (spec-loops specs))
+                                      (set descendants))]
     (doseq [dk loopy-descs]
       (rmap-undirty specs cache state dk))
 
@@ -253,6 +253,28 @@
    (set (spec-loops (.specs m)))
    (set (keys (.state m)))))
 
-(defn input-keys-recursive
+
+(defn state
   [m]
-  )
+  #?(:clj  (.state m)
+     :cljs (.-state m)))
+
+(defn specs
+  [m]
+  #?(:clj  (.specs m)
+     :cljs (.-specs m)))
+
+(defn state-recursive
+  [m]
+  (into
+   {}
+   (for [[k v] (state m)]
+     (if-not (instance? ReactiveMap v)
+       [k v]
+       (let [inherited-keys     (spec-parents (specs m) k)
+             child-state        (state-recursive v)
+             non-inherited-keys (set/difference (set (keys child-state))
+                                                (set inherited-keys))
+             result             (select-keys child-state non-inherited-keys)]
+         (when-not (empty? result)
+           [k result]))))))

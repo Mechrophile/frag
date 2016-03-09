@@ -1,5 +1,5 @@
 (ns frag.core-test
-  (:require [frag.core :refer [reactive-map nest input-keys input-keys-recursive]]
+  (:require [frag.core :refer [reactive-map nest state state-recursive]]
             #?(:clj [clojure.test :refer :all]
                :cljs [cljs.test :refer-macros [deftest is testing run-tests]])
             [plumbing.core :as p]
@@ -127,24 +127,27 @@
           m (assoc m :e 13)]
       (is (= (* 13 11 7 5 3) (get m :a)))))) 
 
-(deftest input-keys-test
+(deftest state-test
   (let [m (reactive-map :a (p/fnk [b c] (+ b c))
                         :d 7
                         :f (fn [x] x)
                         :z (p/fnk [z f] (inc (or z (f 0)))))]
-    (is (= #{:b :c :z} (input-keys m))))
+    (is (= {} (state m)))
+    (let [n (assoc m :x 14)]
+      (is (= {:x 14} (state n)))))
 
   (let [m (reactive-map :a (p/fnk [i] i) :i 1)]
-    (is (= #{} (input-keys m)))
-    (is (= #{:i} (input-keys (assoc m :i 2))))))
+    (is (= {} (state m)))
+    (is (= {:i 2} (state (assoc m :i 2))))))
 
-(deftest input-keys-recursive-test
+(deftest state-recursive-test
   (let [m (reactive-map :a (p/fnk [i] i)
                         (nest :q [] {:z (p/fnk [y] y)}))]
-    (is (= #{[:i] [:q :y]} (input-keys-recursive m))))
+    (is (= {} (state-recursive m)))
+    (is (= {:q {:y 1}} (state-recursive (assoc-in m [:q :y] 1)))))
+
   (let [m (reactive-map (nest :a [:i] :a (p/fnk [i j] (+ i j)) :j 2) :i 1)]
-    (is (= #{} (input-keys-recursive m)))
-    (is (= #{[:i]} (input-keys-recursive (assoc m :i 2))))
-    (is (= #{[:i] [:a :j]}
-           (input-keys-recursive (-> (assoc m :i 2)
-                                     (assoc-in [:a :j] 3)))))))
+    (is (= {} (state-recursive m)))
+    (is (= {:i 2} (state-recursive (assoc m :i 2))))
+    (is (= {:i 2 :a {:j 3}} (state-recursive (-> (assoc m :i 2)
+                                                 (assoc-in [:a :j] 3)))))))
