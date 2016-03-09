@@ -189,8 +189,7 @@
        (rmap-get specs cache state k not-found))
 
      clojure.lang.IPersistentCollection
-     (cons [this o]
-       (reduce (fn [m [k v]] (assoc m k v)) this o))
+     (cons [this o] (reduce (fn [m [k v]] (assoc m k v)) this o))
 
      (equiv [this o]
        (and (instance? ReactiveMap o)
@@ -214,24 +213,19 @@
      (seq [this] (map #(find this %) (rmap-keys specs state))))
 
    :cljs
-   (deftype ReactiveMap [specs values dirty maybe-dirty input-keys]
+   (deftype ReactiveMap [specs cache state]
      ILookup
      (-lookup [this k] (-lookup this k nil))
-     (-lookup [this k not-found]
-       (rmap-get specs values dirty maybe-dirty k not-found))
+     (-lookup [this k not-found] (rmap-get specs cache state k not-found))
 
      ICollection
-     (-conj [this o]
-       (reduce (fn [m [k v]] (assoc m k v)) this o))
+     (-conj [this o] (reduce (fn [m [k v]] (assoc m k v)) this o))
 
      IAssociative
-     (-assoc [this k v]
-       (or (rmap-assoc specs values dirty maybe-dirty input-keys k v)
-           this))
+     (-assoc [this k v] (rmap-assoc specs cache state k v))
 
      ISeqable
-     (-seq [this] (for [k (rmap-keys specs @values)]
-                    (vector k (get this k))))
+     (-seq [this] (map #(find this %) (rmap-keys specs state)))
 
      IPrintWithWriter
      (-pr-writer [this writer opts]
