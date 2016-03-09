@@ -1,6 +1,7 @@
 (ns frag.core
   (:require [plumbing.core :as p]
             [plumbing.fnk.pfnk :as pfnk]
+            [plumbing.map :as pm]
             [schema.core :as s]
             [clojure.set :as set]))
 
@@ -8,151 +9,184 @@
   [spec]
   (not (and (fn? spec) (:schema (meta spec)))))
 
-(defn- dependent-keys
-  [specs ks]
-  (if (empty? ks)
-    #{}
-    (->> specs
-         (filter (fn [[_ v]] (and (fn? v) (:schema (meta v)))))
-         (filter (fn [[_ v]] (some ks (pfnk/input-schema-keys v))))
-         keys set)))
-
-(defn- dependent-keys-recursive
-  [specs ks]
-  (loop [cur-ks ks]
-    (let [new-ks (into cur-ks (dependent-keys specs cur-ks))]
-      (if (= new-ks cur-ks)
-        (disj cur-ks ks)
-        (recur new-ks)))))
-
-(defn- rmap-get*
-  "return [value changed? new-values new-dirty new-maybe-dirty]"
-  [specs values dirty maybe-dirty k not-found]
-  (let [has-value      (contains? values k)
-        has-spec       (contains? specs k)
-        spec           (get specs k)
-        cur-value      (get values k)
-        is-dirty       (get dirty k)
-        is-maybe-dirty (get maybe-dirty k)]
-    (cond
-      (and has-value (not is-dirty) (not is-maybe-dirty))
-      [cur-value false values dirty maybe-dirty]
-
-      (and has-spec (static-spec? spec))
-      [spec (if has-value (= cur-value spec) false)
-       (assoc values k spec) (disj dirty k) (disj maybe-dirty k)]
-
-      (not has-spec)
-      [not-found has-value
-       (dissoc values k) (disj dirty k) (disj maybe-dirty k)]
-
-      :else
-      (let [input-keys (pfnk/input-schema-keys spec)
-            [inputs any-changed? new-values new-dirty new-maybe-dirty]
-            (reduce
-             (fn [[m c? v d md] ik]
-               (if (= ik k)
-                 [(assoc m k cur-value) c? v d md]
-                 (let [[iv changed? nv nd nmd] (rmap-get* specs v d md ik nil)]
-                   [(assoc m ik iv)
-                    (or changed? c?)
-                    nv nd nmd])))
-             [{} false values dirty maybe-dirty]
-             input-keys)
-            new-value (if (and has-value (not any-changed?) (not is-dirty))
-                        cur-value
-                        (spec inputs))
-            changed? (or (not has-value) (not= cur-value new-value))
-            deps (disj (dependent-keys specs #{k}) k)
-            result [new-value changed?
-                    (assoc new-values k new-value)
-                    (-> (disj dirty k)
-                        (p/?> changed? (clojure.set/union deps)))
-                    (-> (disj maybe-dirty k)
-                        (p/?> changed? (clojure.set/difference deps)))]]
-        ;;(println result)
-        result))))
-
-(defn- rmap-get [specs values dirty maybe-dirty k not-found]
-  ;;(println "getting" k "dirty:" @dirty "/" @maybe-dirty)
-  (let [[result _ new-values new-dirty new-maybe-dirty]
-        (rmap-get* specs @values @dirty @maybe-dirty k not-found)]
-    (reset! values new-values)
-    (reset! dirty new-dirty)
-    (reset! maybe-dirty new-maybe-dirty)
-    result))
-
-(defn- rmap-assoc*
-  "returns
-  [updated-values updated-dirty updated-maybe-dirty
-   new-values new-dirty new-maybe-dirty]"
-  [specs values dirty maybe-dirty k v]
-  (if (= v (get values k))
-    nil
-    (let [dirtied       (dependent-keys specs #{k})
-          maybe-dirtied (dependent-keys-recursive specs dirtied)
-          redirtied     (set/intersection (set/union dirtied maybe-dirtied)
-                                          (set/union dirty   maybe-dirty))
-          ;; if we're dirtying any keys that were already dirty and depend on
-          ;; their own value, we have to evaluate them now
-          [vs d md]
-          (reduce
-           (fn [[vs ds md] dk]
-             (let [spec (get specs dk)]
-               (if (and (not (static-spec? spec))
-                        (some #{dk} (pfnk/input-schema-keys spec)))
-                 (do ;;(println "forcing eval of" dk
-                     ;;         "because it depends on itself and" k)
-                   (drop 2 (rmap-get* specs vs ds md dk nil)))
-                 [vs ds md])))
-           [values dirty maybe-dirty]
-           redirtied)]
-      [vs d md
-       (assoc vs k v) (into d dirtied) (into md maybe-dirtied)])) )
-
 (declare ->ReactiveMap)
 
-(defn rmap-assoc
-  [specs values dirty maybe-dirty input-keys k v]
-  (when-let [[mv md mnd nv nd nmd]
-             (rmap-assoc* specs @values @dirty @maybe-dirty k v)]
-    (do (reset! values mv)
-        (reset! dirty md)
-        (reset! maybe-dirty nmd)
-        (->ReactiveMap specs
-                       (atom nv)
-                       (atom nd)
-                       (atom nmd)
-                       (let [sv (get specs k)]
-                         (if (or (not (static-spec? sv))
-                                 (not= v sv))
-                           (conj input-keys k)
-                           (disj input-keys k)))))))
+;; ReactiveMap has three parts:
+;;  - specs: how to generate a value - shared by all descendants
+;;  - cache: any specs already evaluated
+;;  - state: assoc'd values
+;;  - dependency graph
 
-(defn rmap-keys
-  [specs values]
-  (distinct (concat (keys specs) (keys values))))
+(defn- cache
+  ([] (cache {}))
+  ([v] {:pre [(map? v)]}
+   (atom (p/map-vals #(assoc {} :value %) v))))
 
-(defn spec-input-keys
-  "Return any keys that are taken by a spec as input and not defined by another
-  spec and any specs that depend on themselves. "
+(defn- cache-clone [cache] (atom @cache))
+
+(defn- cache-dirty?            [cache k] (true? (get-in @cache [k :dirty])))
+(defn- cache-maybe-dirty?      [cache k] (get-in @cache [k :dirty]))
+(defn- cache-mark-dirty!       [cache k] (swap! cache assoc-in [k :dirty] true))
+(defn- cache-mark-maybe-dirty! [cache k] (swap! cache assoc-in [k :dirty] :maybe))
+(defn- cache-mark-clean!       [cache k] (swap! cache update k dissoc :dirty))
+(defn- cache-contains?         [cache k] (contains? @cache k)) ;; k :value ?
+(defn- cache-get               [cache k] (get-in @cache [k :value]))
+
+(defn- cache-assoc!
+  "Store value in cache and clear dirty flags"
+  [cache k v]
+  (swap! cache assoc k {:value v}))
+
+(defn- cache-dissoc!
+  "Remove value from cache and clear dirty flags"
+  [cache k]
+  (swap! cache dissoc k))
+
+(defn- adj-map->adj-list
+  "{k [v1 v2]} => [k v1] [k v2]"
+  [m]
+  (mapcat (fn [[k vs]] (map #(vector k %) vs)) m))
+
+(defn- adj-list->adj-map
+  "[k v1] [k v2] => {k [v1 v2]}"
+  [coll]
+  (reduce (fn [m [k v]] (update m k conj v)) {} coll))
+
+(defn- reverse-adj-map
+  "{k [v1 v2]} => {v1 [k] v2 [k]}"
+  [m]
+  (->> (adj-map->adj-list m)
+       (map reverse)
+       (adj-list->adj-map)))
+
+(defn- find-descendants
+  [g]
+  (reduce (fn [m k] (update m k (p/fn->> (mapcat #(cons % (get m %)))
+                                        distinct)))
+          g (reverse (pm/topological-sort g))))
+
+(defn- find-loops
+  [g]
+  (->> (adj-map->adj-list g)
+       (filter #(apply = %))
+       (map first)))
+
+(defn- dependency-relations
+  "Given a digraph as a reversed adjacency map (i.e. {k [v]} => v->k), return
+  maps of various relationships."
+  [parents]
+  (let [children (reverse-adj-map parents)]
+    {:parents     parents
+     :ancestors   (find-descendants parents)
+     :children    children
+     :descendants (find-descendants children)
+     :loops       (find-loops parents)
+     :sources     (set/difference (set (keys children)) (set (keys parents)))
+     :sinks       (set/difference (set (keys parents))  (set (keys children)))}))
+
+(defn- spec-with-deps
   [specs]
-  (let [spec-keys       (-> specs keys set)
+  (let [dynamic-specs (into {} (remove #(static-spec? (val %)) specs))
+        dependencies (p/map-vals pfnk/input-schema-keys dynamic-specs)]
+    (vary-meta specs assoc ::deps (dependency-relations dependencies))))
+
+(defn- spec-parents     [specs k] (get-in (meta specs) [::deps :parents k]))
+(defn- spec-descendants [specs k] (get-in (meta specs) [::deps :descendants k]))
+(defn- spec-children    [specs k] (get-in (meta specs) [::deps :children k]))
+(defn- spec-loops       [specs]   (get-in (meta specs) [::deps :loops]))
+(defn- spec-sources     [specs]   (get-in (meta specs) [::deps :sources]))
+
+(defn- rmap-recalculate [specs cache state k]
+  (let [spec-fn     (get specs k)
+        fetch-value #(if (cache-contains? cache %)
+                       (cache-get cache %)
+                       (get state %))
+        old-value   (fetch-value k)
+        new-value   (->> (spec-parents specs k)
+                         (p/map-from-keys fetch-value)
+                         spec-fn)]
+    ;;(println "recalced" k old-value " => " new-value)
+    (cache-assoc! cache k new-value)
+    (when (not= new-value old-value)
+      (doseq [ck (spec-children specs k)]
+        (when (not= ck k)
+          ;;(println "dirtying" ck)
+          (cache-mark-dirty! cache ck))))))
+
+
+(defn- rmap-undirty [specs cache state k]
+  (when (cache-maybe-dirty? cache k)
+    ;; undirty parents
+    (doseq [pk (spec-parents specs k)]
+      (when (not= pk k) (rmap-undirty specs cache state pk)))
+    ;; dirty parents will have dirtied us
+    (when (cache-dirty? cache k)
+      (rmap-recalculate specs cache state k))
+    (cache-mark-clean! cache k)))
+
+(defn- rmap-get [specs cache state k not-found]
+  (when (contains? specs k)
+    (rmap-undirty specs cache state k))
+  (if (cache-contains? cache k)
+    (cache-get cache k)
+    (get state k not-found)))
+
+(defn- rmap-assoc [specs cache state k v]
+  ;; if we have any descendants that depend on their own state, then their
+  ;; current value becomes part of our new object's state
+  (let [descendants (spec-descendants specs k)
+        dirty-descs (filter (partial cache-maybe-dirty? cache) descendants)
+        loopy-descs (filter (set (spec-loops specs)) descendants)]
+    (doseq [dk loopy-descs]
+      (rmap-undirty specs cache state dk))
+
+    (let [new-cache (cache-clone cache)
+          new-state (reduce (fn [s k]
+                              (cache-mark-dirty! new-cache k)
+                              (assoc s k (cache-get cache k)))
+                            state loopy-descs)]
+      (cache-dissoc! new-cache k)
+      (doseq [dk descendants]             (cache-mark-maybe-dirty! new-cache dk))
+      (doseq [dk (spec-children specs k)] (cache-mark-dirty!       new-cache dk))
+      ;;(println "assoc" k v)
+      ;;(println "loopy" loopy-descs)
+      ;;(println specs new-cache (assoc new-state k v))
+      (->ReactiveMap specs
+                     new-cache
+                     (assoc new-state k v)))))
+
+(defn- rmap-keys [specs state]
+  (distinct (mapcat keys [specs state])))
+
+(defn- parse-specs
+  [args]
+  (loop [specs {}
+         args args]
+    (if (empty? args)
+      specs
+      (let [[k v & more] args]
+        (cond
+          (keyword? k) (recur (assoc specs k v) more)
+          (map? k) (recur (merge specs k) (when v (cons v more)))
+          :else (throw (new #?(:clj RuntimeException :cljs js/Error)
+                            "unexpected value in key position")))))))
+
+(defn reactive-map [& specs]
+  (let [specs (parse-specs specs)
         specs-by-static (group-by #(static-spec? (val %)) specs)
-        spec-input-map  (p/map-vals (comp set pfnk/input-schema-keys)
-                                    (get specs-by-static false))
-        all-spec-inputs (set (mapcat val spec-input-map))]
-    (set/union
-     (set/difference all-spec-inputs spec-keys) ;; expected in spec
-     (set (keep (fn [[k v]] (when (contains? v k) k)) ;; spec that takes itself
-                spec-input-map)))))
+        static-specs (into {} (get specs-by-static true))
+        dynamic-spec-keys (map first (get specs-by-static false))
+        cache (cache static-specs)]
+    (doseq [k dynamic-spec-keys]
+      (cache-mark-dirty! cache k))
+    (->ReactiveMap (spec-with-deps specs) cache {})))
 
 #?(:clj
-   (deftype ReactiveMap [specs values dirty maybe-dirty input-keys]
+   (deftype ReactiveMap [specs cache state]
      clojure.lang.ILookup
      (valAt [this k] (.valAt this k nil))
      (valAt [this k not-found]
-       (rmap-get specs values dirty maybe-dirty k not-found))
+       (rmap-get specs cache state k not-found))
 
      clojure.lang.IPersistentCollection
      (cons [this o]
@@ -160,29 +194,24 @@
 
      (equiv [this o]
        (and (instance? ReactiveMap o)
-            (= (.values o) values)
-            (= (.dirty o) dirty)
-            (= (.maybe-dirty o) maybe-dirty)))
+            (= (.specs o) specs)
+            (= (.state o) state)))
 
      clojure.lang.IPersistentMap
-     (assoc [this k v]
-       (or (rmap-assoc specs values dirty maybe-dirty input-keys k v)
-           this))
+     (assoc [this k v] (rmap-assoc specs cache state k v))
 
      java.lang.Iterable
-     (iterator [this]
-       (.iterator (seq this)))
+     (iterator [this] (.iterator (seq this)))
 
      clojure.lang.Associative
      (containsKey [this k]
-       (boolean (some #{k} (rmap-keys specs @values))))
+       (boolean (some #{k} (rmap-keys specs state))))
      (entryAt [this k]
        (when (contains? this k)
          (clojure.lang.MapEntry. k (get this k))))
 
      clojure.lang.Seqable
-     (seq [this] (for [k (rmap-keys specs @values)]
-                   (clojure.lang.MapEntry. k (get this k)))))
+     (seq [this] (map #(find this %) (rmap-keys specs state))))
 
    :cljs
    (deftype ReactiveMap [specs values dirty maybe-dirty input-keys]
@@ -208,27 +237,6 @@
      (-pr-writer [this writer opts]
        (print-map this pr-writer writer opts))))
 
-(defn parse-specs
-  [args]
-  (loop [specs {}
-         args args]
-    (if (empty? args)
-      specs
-      (let [[k v & more] args]
-        (cond
-          (keyword? k) (recur (assoc specs k v) more)
-          (map? k) (recur (merge specs k) (when v (cons v more)))
-          :else (throw (new #?(:clj RuntimeException :cljs js/Error)
-                            "unexpected value in key position")))))))
-
-(defn reactive-map
-  [& args]
-  (let [specs (parse-specs args)]
-    (ReactiveMap. specs
-                  (atom {})
-                  (atom #{})
-                  (atom #{})
-                  (spec-input-keys specs))))
 
 (defn nest
   [k ks & spec-args]
@@ -237,72 +245,14 @@
         input-schema (p/map-from-keys (constantly s/Any) (cons k ks))]
     {k (pfnk/fn->fnk f [input-schema ReactiveMap])}))
 
-(defn- rmap-specs [m]
-  #?(:clj (.specs m)
-     :cljs (.-specs m)))
-
-(defn- rmap-values [m]
-  #?(:clj @(.values m)
-     :cljs @(.-values m)))
-
 (defn input-keys
-  "Given a ReactiveMap, return a set of keys that:
-   - are expected as input in any spec
-   - OR have a value but no spec
-   - OR have a value and different static spec
-   - OR have a spec that takes its previous value as input"
   [m]
-  #?(:clj  (.input-keys m)
-     :cljs (.-input-keys m)))
-
-;; After tools.namespace reloads the namespace, ReactiveMap inside of a closure
-;; refers to a different object than ReactiveMap at top level. Seems like a bug.
-;; This works around it.
-(defn- outputs-rmap?
-  [[k v]]
-  (and (not (static-spec? v))
-       (= ReactiveMap (pfnk/output-schema v))))
+  (set/union
+   (set/difference (set (spec-sources (.specs m)))
+                   (set (map key (filter #(static-spec? (val %)) (.specs m)))))
+   (set (spec-loops (.specs m)))
+   (set (keys (.state m)))))
 
 (defn input-keys-recursive
-  "Like input-keys, but recurses through any specs that return a ReactiveMap
-  and take themselves as input (such as created with nest).
-
-  NOTE: this requires evaluation of nested ReactiveMaps, which may throw an
-        exception if they're expecting input that isn't available"
   [m]
-  (when m
-    (let [input-key-set       (input-keys m)
-          nested-specs        (->> input-key-set
-                                   (select-keys (rmap-specs m))
-                                   (filter outputs-rmap?))
-          nested-param-map    (p/map-vals pfnk/input-schema-keys nested-specs)
-          non-nested-inputs   (->> (keys nested-specs)
-                                   (set)
-                                   (set/difference input-key-set)
-                                   (map list))
-          remove-fwded-inputs (fn [k v]
-                                (->> (get nested-param-map k)
-                                     (map list)
-                                     (set)
-                                     (p/<- (remove v))))
-          nested-inputs       (->> (keys nested-specs)
-                                   (select-keys m)
-                                   (p/map-vals input-keys-recursive)
-                                   (mapcat (fn [[k v]]
-                                             (map (partial cons k)
-                                                  (remove-fwded-inputs k v)))))]
-      (set (concat nested-inputs non-nested-inputs)))))
-
-(defn inputs
-  [m]
-  (select-keys m (input-keys m)))
-
-(defn inputs-recursive
-  [m]
-  (reduce (fn [s p]
-            (let [v (get-in m p ::not-found)]
-              (if (= ::not-found v)
-                s
-                (assoc-in s p v))))
-          {}
-          (input-keys-recursive m)))
+  )
