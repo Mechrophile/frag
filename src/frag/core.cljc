@@ -27,7 +27,7 @@
 (defn- cache-dirty?            [cache k] (true? (get-in @cache [k :dirty])))
 (defn- cache-maybe-dirty?      [cache k] (get-in @cache [k :dirty]))
 (defn- cache-mark-dirty!       [cache k] (swap! cache assoc-in [k :dirty] true))
-(defn- cache-mark-maybe-dirty! [cache k] (swap! cache assoc-in [k :dirty] :maybe))
+(defn- cache-mark-maybe-dirty! [cache k] (swap! cache update-in [k :dirty] #(or % :maybe)))
 (defn- cache-mark-clean!       [cache k] (swap! cache update k dissoc :dirty))
 (defn- cache-contains-value?   [cache k] (contains? (get @cache k) :value))
 (defn- cache-get               [cache k] (get-in @cache [k :value]))

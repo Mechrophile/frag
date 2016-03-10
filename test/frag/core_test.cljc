@@ -138,6 +138,20 @@
       (is (= 9  (get (assoc-in m [:nested :input] 3) :nnv)))
       (is (= 9  (get-in (assoc-in m [:nested :input] 3) [:nested :value])))))
 
+  (testing "bug: maybe-dirty doesn't clobber dirty"
+    (let [m (reactive-map :a (p/fnk [ai]   (+ (or ai 0) 0))
+                          :b (p/fnk [bi a] (if bi bi a))
+                          :c (p/fnk [ci b] (+ (or ci 0) b)))
+          n (-> m
+                (assoc :bi 2)
+                (doto (get :c)) ;; c cached = 2
+                (assoc :ci 1)   ;; dirties c
+                (assoc :ai 3))] ;; dirties a, maybe-dirties b,c
+      ;; c should be dirty and recompute, but if maybe-dirty clobbered it then
+      ;; it will recompute b first, which won't change, and then mark clean
+      ;; without recomputing
+      (is (= (+ 1 2) (get n :c)))))
+
   (testing "constructor pulls in nested maps"
     (let [m (reactive-map :a (p/fnk [b] (* b 3))
                           {:b (p/fnk [c] (* c 5))
