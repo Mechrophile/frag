@@ -231,11 +231,19 @@
      (-pr-writer [this writer opts]
        (print-map this pr-writer writer opts))))
 
+;; sometimes when reloading ns, ReactiveMap in closure doesn't update. bug?
+(defn- rmap? [o]
+  (instance? ReactiveMap o))
 
 (defn nest
   [k ks & spec-args]
-  (let [f (fn [m] (let [self (or (get m k) (apply reactive-map spec-args))]
-                   (merge self (dissoc m k))))
+  (let [f (fn [params]
+            (let [old-value (get params k)
+                  new-params (dissoc params k)]
+              (if (rmap? old-value)
+                (merge old-value new-params)
+                (merge (apply reactive-map spec-args)
+                       old-value new-params))))
         input-schema (p/map-from-keys (constantly s/Any) (cons k ks))]
     {k (pfnk/fn->fnk f [input-schema ReactiveMap])}))
 
@@ -263,7 +271,7 @@
   (into
    {}
    (for [[k v] (state m)]
-     (if-not (instance? ReactiveMap v)
+     (if-not (rmap? v)
        [k v]
        (let [inherited-keys     (spec-parents (specs m) k)
              child-state        (state-recursive v)

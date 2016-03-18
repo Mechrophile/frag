@@ -158,7 +158,18 @@
                            :c (p/fnk [d] (* d 7))}
                           :d (p/fnk [e] (* e 11)))
           m (assoc m :e 13)]
-      (is (= (* 13 11 7 5 3) (get m :a)))))) 
+      (is (= (* 13 11 7 5 3) (get m :a)))))
+
+  (testing "assoc'ing nested maps"
+    (let [m (reactive-map :a 1
+                          (nest :b [:a]
+                                :x 1
+                                :y (p/fnk [a x] (+ a x))))]
+      (is (= 4 (-> m
+                   (assoc :a 2)
+                   (assoc :b {:x 2})
+                   :b
+                   :y))))))
 
 (deftest state-test
   (let [m (reactive-map :a (p/fnk [b c] (+ b c))
