@@ -3,7 +3,8 @@
             [plumbing.fnk.pfnk :as pfnk]
             [plumbing.map :as pm]
             [schema.core :as s]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [frag.cache :as cache]))
 
 (defn- static-spec?
   [spec]
@@ -17,30 +18,6 @@
 ;;  - state: assoc'd values
 ;;  - dependency graph
 
-(defn- cache
-  ([] (cache {}))
-  ([v] {:pre [(map? v)]}
-   (atom (p/map-vals #(assoc {} :value %) v))))
-
-(defn- cache-clone [cache] (atom @cache))
-
-(defn- cache-dirty?            [cache k] (true? (get-in @cache [k :dirty])))
-(defn- cache-maybe-dirty?      [cache k] (get-in @cache [k :dirty]))
-(defn- cache-mark-dirty!       [cache k] (swap! cache assoc-in [k :dirty] true))
-(defn- cache-mark-maybe-dirty! [cache k] (swap! cache update-in [k :dirty] #(or % :maybe)))
-(defn- cache-mark-clean!       [cache k] (swap! cache update k dissoc :dirty))
-(defn- cache-contains-value?   [cache k] (contains? (get @cache k) :value))
-(defn- cache-get               [cache k] (get-in @cache [k :value]))
-
-(defn- cache-assoc!
-  "Store value in cache and clear dirty flags"
-  [cache k v]
-  (swap! cache assoc k {:value v}))
-
-(defn- cache-dissoc!
-  "Remove value from cache and clear dirty flags"
-  [cache k]
-  (swap! cache dissoc k))
 
 (defn- adj-map->adj-list
   "{k [v1 v2]} => [k v1] [k v2]"
@@ -98,37 +75,38 @@
 
 (defn- rmap-recalculate [specs cache state k]
   (let [spec-fn     (get specs k)
-        fetch-value #(if (cache-contains-value? cache %)
-                       (cache-get cache %)
+        fetch-value #(if (cache/contains-value? cache %)
+                       (cache/get cache %)
                        (get state %))
         old-value   (fetch-value k)
         new-value   (->> (spec-parents specs k)
                          (p/map-from-keys fetch-value)
                          spec-fn)]
     ;;(println "recalced" k old-value " => " new-value)
-    (cache-assoc! cache k new-value)
+    (cache/assoc! cache k new-value)
     (when (not= new-value old-value)
       (doseq [ck (spec-children specs k)]
         (when (not= ck k)
           ;;(println "dirtying" ck)
-          (cache-mark-dirty! cache ck))))))
+          (cache/mark-dirty! cache ck))))))
 
 
 (defn- rmap-undirty [specs cache state k]
-  (when (cache-maybe-dirty? cache k)
+  (when-not (cache/clean? cache k)
     ;; undirty parents
     (doseq [pk (spec-parents specs k)]
       (when (not= pk k) (rmap-undirty specs cache state pk)))
     ;; dirty parents will have dirtied us
-    (when (cache-dirty? cache k)
+    (when (cache/dirty? cache k)
       (rmap-recalculate specs cache state k))
-    (cache-mark-clean! cache k)))
+    (cache/mark-clean! cache k)))
 
 (defn- rmap-get [specs cache state k not-found]
   (when (contains? specs k)
     (rmap-undirty specs cache state k))
-  (if (cache-contains-value? cache k)
-    (cache-get cache k)
+  (cache/get cache k (get state k not-found))
+  (if (cache/contains-value? cache k)
+    (cache/get cache k)
     (get state k not-found)))
 
 (defn- rmap-assoc [specs cache state k v]
@@ -140,14 +118,14 @@
     (doseq [dk loopy-descs]
       (rmap-undirty specs cache state dk))
 
-    (let [new-cache (cache-clone cache)
+    (let [new-cache (cache/clone cache)
           new-state (reduce (fn [s k]
-                              (cache-mark-dirty! new-cache k)
-                              (assoc s k (cache-get cache k)))
+                              (cache/mark-dirty! new-cache k)
+                              (assoc s k (cache/get cache k)))
                             state loopy-descs)]
-      (cache-dissoc! new-cache k)
-      (doseq [dk descendants]             (cache-mark-maybe-dirty! new-cache dk))
-      (doseq [dk (spec-children specs k)] (cache-mark-dirty!       new-cache dk))
+      (cache/dissoc! new-cache k)
+      (doseq [dk descendants]             (cache/maybe-dirty! new-cache dk))
+      (doseq [dk (spec-children specs k)] (cache/mark-dirty!  new-cache dk))
       ;;(println "assoc" k v)
       ;;(println "loopy" loopy-descs)
       ;;(println specs new-cache (assoc new-state k v))
@@ -176,9 +154,9 @@
         specs-by-static (group-by #(static-spec? (val %)) specs)
         static-specs (into {} (get specs-by-static true))
         dynamic-spec-keys (map first (get specs-by-static false))
-        cache (cache static-specs)]
+        cache (cache/cache static-specs)]
     (doseq [k dynamic-spec-keys]
-      (cache-mark-dirty! cache k))
+      (cache/mark-dirty! cache k))
     (->ReactiveMap (spec-with-deps specs) cache {})))
 
 #?(:clj
