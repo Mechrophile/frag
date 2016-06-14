@@ -1,0 +1,56 @@
+* frag
+
+frag is a library for creating declarative, immutable, reactive graph structures, where the value of nodes may be calculated based on the value of other nodes.
+
+** Example
+
+Using the map interface:
+
+#+BEGIN_SRC clojure
+(require '[frag.core :as frag]
+         '[plumbing.core :as p])
+
+(def example
+  (frag/reactive-map
+   :n-plus-one (p/fnk [n]   (println "calculating n-plus-one")
+                            (inc n))
+   :n-times-m  (p/fnk [n m] (println "calculating n-times-m")
+                            (* n m))
+   :magic      (p/fnk [n-plus-one n-times-m]
+                 (println "magic goes here")
+                 (max n-plus-one n-times-m))))
+
+(def example-2 (assoc example :n 2))
+
+(:n-plus-one example-2)
+;; Output: calculating n-plus-one
+;; => 3
+
+(def example-3 (assoc example-2 :m 1))
+
+(:n-plus-one example-3)
+;; no output, value was already calculated
+;; => 3
+
+(:n-times-m example-3)
+;; Output: calculating n-times-m
+;; => 2
+
+(:magic example-3)
+;; Output: magic goes here
+;; => 3
+#+END_SRC
+
+** Differences from Prismatic Graph
+
+[[https://github.com/plumatic/plumbing][Prismatic's Graph library]] compiles a graph to a function that takes an input map and returns an output map.
+
+frag creates an object that can be treated like an ordinary map. Inputs are supplied by assoc'ing to input keys, and outputs are returned by getting the value of output keys. Outputs or intermediate values that are not used are not calculated. Calculations that have already been performed are not repeated in descendant maps unless their inputs have changed.
+
+frag is more convenient and potentially more efficient when you have input that partially changes over time (for example, individual fields changing in a user interface), or many related inputs (such as a collection of maps that differ in only a few keys).
+
+** License
+
+Released into the public domain.
+
+See UNLICENSE or <http://unlicense.org> for details.
