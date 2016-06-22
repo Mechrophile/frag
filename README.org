@@ -1,4 +1,4 @@
-* frag [[https://travis-ci.org/pclewis/frag.svg]]
+* frag [[https://travis-ci.org/pclewis/frag][https://travis-ci.org/pclewis/frag.svg]]
 
 frag is a library for creating declarative, immutable, reactive graph structures, where the value of nodes may be calculated based on the value of other nodes.
 
