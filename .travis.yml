@@ -1,5 +1,5 @@
 language: clojure
-script: lein do test, doo phantom test once
+script: lein do test frag.core-test, doo phantom test once
 jdk:
   - oraclejdk8
   - oraclejdk7
